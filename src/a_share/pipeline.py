@@ -29,6 +29,16 @@ def _last_ohlcv_date(df: pd.DataFrame) -> pd.Timestamp | None:
     return pd.to_datetime(sub["date"]).max()
 
 
+def _valid_daily(df: pd.DataFrame) -> bool:
+    """至少有一条有效收盘价。"""
+    return (
+        df is not None
+        and not df.empty
+        and "close" in df.columns
+        and df["close"].notna().any()
+    )
+
+
 def _read_watchlist(path: Path) -> list[str]:
     codes: list[str] = []
     if not path.exists():
@@ -169,8 +179,9 @@ def update_daily(
     errors: list[str] = []
 
     def _commit(code: str, new: pd.DataFrame) -> None:
+        if not _valid_daily(new):
+            raise ValueError("返回空表或无有效收盘价")
         existing = read_daily(daily_dir, code)
-        # force 时用新 OHLCV 覆盖同日价量，仍通过 merge 保留已有 volamount
         merged = merge_daily(existing, new)
         write_daily(daily_dir, code, merged)
 
@@ -192,12 +203,13 @@ def update_daily(
                 fail += 1
                 errors.append(f"{code}: {exc}")
     else:
+        failed_jobs: list[tuple[str, str, str, int, float]] = []
         with ProcessPoolExecutor(
             max_workers=max(1, n_workers),
             initializer=fetchers._worker_login,
         ) as pool:
             futs = {
-                pool.submit(fetchers.fetch_daily_worker, job): job[0] for job in jobs
+                pool.submit(fetchers.fetch_daily_worker, job): job for job in jobs
             }
             for fut in tqdm(
                 as_completed(futs),
@@ -205,18 +217,46 @@ def update_daily(
                 desc=f"更新日线(baostock×{n_workers})",
                 unit="只",
             ):
-                code = futs[fut]
+                job = futs[fut]
+                code = job[0]
                 try:
                     code, new, err = fut.result()
                     if err or new is None:
                         fail += 1
+                        failed_jobs.append(job)
                         errors.append(f"{code}: {err or 'empty'}")
                         continue
                     _commit(code, new)
                     ok += 1
                 except Exception as exc:  # noqa: BLE001
                     fail += 1
+                    failed_jobs.append(job)
                     errors.append(f"{code}: {exc}")
+
+        # 并行失败的股票，降为单进程逐只重试（避免 baostock 并发登录超限）
+        if failed_jobs:
+            retry_ok = 0
+            for job in tqdm(failed_jobs, desc="重试失败股票", unit="只"):
+                code, pull_start, pull_end, *_ = job
+                try:
+                    new = fetchers.fetch_daily_hist(
+                        code,
+                        pull_start,
+                        pull_end,
+                        max_retries=max_retries,
+                        retry_pause=retry_pause,
+                    )
+                    _commit(code, new)
+                    ok += 1
+                    retry_ok += 1
+                    fail -= 1
+                    errors = [e for e in errors if not e.startswith(f"{code}:")]
+                    if pause > 0:
+                        time.sleep(pause)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{code}: retry {exc}")
+            if retry_ok:
+                print(f"[daily] 单进程重试成功 {retry_ok} 只")
 
     if errors:
         log_dir = ROOT / "logs"

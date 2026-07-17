@@ -326,6 +326,8 @@ def fetch_daily_worker(
             retry_pause=retry_pause,
             manage_login=False,
         )
+        if df.empty or not df["close"].notna().any():
+            return code, None, "empty or no close"
         return code, df, None
     except Exception as exc:  # noqa: BLE001
         # 会话偶发失效时，退回单次独立 login

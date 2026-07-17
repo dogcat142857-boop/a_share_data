@@ -93,8 +93,10 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```bash
 python -m a_share.cli init
 python scripts/update_meta.py
-# 全量日线（baostock，多进程；耗时较长）
-python scripts/update_daily.py --force --workers 12
+# 全量重建（清空 daily → baostock 重拉 → 合并已有 volamount）
+python scripts/rebuild_from_baostock.py --workers 8
+# 或增量/全量日线
+python scripts/update_daily.py --force --workers 8
 # 问财补 VOLAMOUNT 并合并进日线
 python scripts/backfill_volamount.py --start 20100101
 # 或日常一键
