@@ -116,33 +116,43 @@ def apply_volamount_snapshot(
     snap["code"] = snap["code"].map(normalize_code)
     snap["volamount"] = pd.to_numeric(snap["volamount"], errors="coerce")
     snap = snap.dropna(subset=["code"]).drop_duplicates(subset=["code"], keep="last")
+    snap["date"] = trade_date
+
+    return apply_volamount_frames(daily_dir, snap)
+
+
+def apply_volamount_frames(daily_dir: Path, frames: pd.DataFrame) -> dict[str, int]:
+    """
+    批量把多日 volamount（列 date/code/volamount）合并进个股日线。
+    按股票一次读写，适合全量回填。
+    """
+    if frames is None or frames.empty:
+        return {"updated": 0, "created": 0}
+
+    data = frames.copy()
+    data["code"] = data["code"].map(normalize_code)
+    data["date"] = pd.to_datetime(data["date"]).dt.normalize()
+    data["volamount"] = pd.to_numeric(data["volamount"], errors="coerce")
+    data = (
+        data.dropna(subset=["code", "date"])
+        .drop_duplicates(subset=["code", "date"], keep="last")
+        .sort_values(["code", "date"])
+    )
 
     updated = created = 0
     daily_dir.mkdir(parents=True, exist_ok=True)
 
-    for row in snap.itertuples(index=False):
-        code = row.code
-        vol = row.volamount
+    for code, grp in data.groupby("code", sort=False):
         path = daily_path(daily_dir, code)
+        patch = grp[["date", "code", "volamount"]].copy()
+        patch["code"] = code
         if path.exists():
-            df = read_daily(daily_dir, code)
-            mask = df["date"] == trade_date
-            if mask.any():
-                df.loc[mask, "volamount"] = vol
-            else:
-                add = {c: pd.NA for c in DAILY_COLUMNS}
-                add["date"] = trade_date
-                add["code"] = code
-                add["volamount"] = vol
-                df = pd.concat([df, pd.DataFrame([add])], ignore_index=True)
-            write_daily(daily_dir, code, df)
+            existing = read_daily(daily_dir, code)
+            merged = merge_daily(existing, patch)
+            write_daily(daily_dir, code, merged)
             updated += 1
         else:
-            add = {c: pd.NA for c in DAILY_COLUMNS}
-            add["date"] = trade_date
-            add["code"] = code
-            add["volamount"] = vol
-            write_daily(daily_dir, code, pd.DataFrame([add]))
+            write_daily(daily_dir, code, patch)
             created += 1
 
     return {"updated": updated, "created": created}

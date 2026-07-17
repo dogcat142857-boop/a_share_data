@@ -23,6 +23,11 @@ def main() -> None:
         help="回填最近 N 个交易日（与 start 互斥优先 days）",
     )
     parser.add_argument("--force", action="store_true", help="忽略本地 raw 缓存重拉")
+    parser.add_argument(
+        "--fetch-only",
+        action="store_true",
+        help="只写 raw，不合并进 daily",
+    )
     args = parser.parse_args()
 
     stats = update_volamount(
@@ -30,6 +35,7 @@ def main() -> None:
         end=args.end,
         days=args.days,
         force=args.force,
+        fetch_only=args.fetch_only,
     )
     print(
         f"完成: 拉取 {stats['ok']}，缓存跳过 {stats['skip']}，"

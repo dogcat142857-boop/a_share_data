@@ -10,6 +10,7 @@ from . import fetchers
 from . import wencai as wencai_api
 from .config import ROOT, ensure_dirs, load_settings
 from .storage import (
+    apply_volamount_frames,
     apply_volamount_snapshot,
     last_trade_date,
     merge_daily,
@@ -203,10 +204,15 @@ def update_volamount(
     end: str | None = None,
     force: bool = False,
     days: int | None = None,
+    fetch_only: bool = False,
+    newest_first: bool = True,
 ) -> dict[str, int]:
     """
     用问财按交易日补全全市场 volamount（总笔数），并写入个股日线。
     默认只更新最近一个交易日；可用 start/end 或 days 做回填。
+
+    fetch_only=True 时只写 raw 横截面，不逐日合并（全量回填更快，事后再 merge）。
+    newest_first=True 时由近到远抓取。
     """
     settings = settings or load_settings()
     ensure_dirs(settings)
@@ -216,12 +222,12 @@ def update_volamount(
 
     cookie = wencai_api.resolve_wencai_cookie(settings)
     daily_dir = Path(settings["storage"]["daily_path"])
+    merge_into_daily = bool(wencai_cfg.get("merge_into_daily", True)) and not fetch_only
 
     if days is not None and start is None:
         latest = _latest_calendar_date(settings)
         if latest is None:
             raise RuntimeError("无交易日历，请先运行 update-meta")
-        # 取最近 N 个交易日
         cal_path = Path(settings["storage"]["meta_path"]) / "trade_calendar.parquet"
         cal = pd.read_parquet(cal_path)
         dates = pd.to_datetime(cal["date"]).sort_values()
@@ -234,12 +240,17 @@ def update_volamount(
     if not date_list:
         return {"ok": 0, "skip": 0, "fail": 0, "total": 0, "rows": 0}
 
+    if newest_first:
+        date_list = list(reversed(date_list))
+
     ok = skip = fail = rows = 0
     errors: list[str] = []
     day_pause = float(wencai_cfg.get("day_pause", 1.5))
+    progress_path = Path(settings["storage"]["meta_path"]) / "volamount_progress.txt"
 
     for trade_date in tqdm(date_list, desc="更新VOLAMOUNT", unit="日"):
         raw_path = _volamount_raw_path(settings, trade_date)
+        ymd = trade_date.strftime("%Y%m%d")
         try:
             if raw_path.exists() and not force:
                 snap = pd.read_parquet(raw_path)
@@ -263,12 +274,20 @@ def update_volamount(
                 ok += 1
                 time.sleep(day_pause)
 
-            if bool(wencai_cfg.get("merge_into_daily", True)):
+            if merge_into_daily:
                 apply_volamount_snapshot(daily_dir, trade_date, snap)
             rows += len(snap)
+            progress_path.write_text(
+                f"last={ymd}\nok={ok}\nskip={skip}\nfail={fail}\n",
+                encoding="utf-8",
+            )
         except Exception as exc:  # noqa: BLE001
             fail += 1
-            errors.append(f"{trade_date.strftime('%Y%m%d')}: {exc}")
+            errors.append(f"{ymd}: {exc}")
+            progress_path.write_text(
+                f"last={ymd}\nok={ok}\nskip={skip}\nfail={fail}\nerr={exc}\n",
+                encoding="utf-8",
+            )
             time.sleep(day_pause)
 
     if errors:
@@ -286,3 +305,44 @@ def update_volamount(
         "total": len(date_list),
         "rows": rows,
     }
+
+
+def merge_volamount_from_raw(
+    *,
+    settings: dict | None = None,
+    start: str | None = None,
+    end: str | None = None,
+) -> dict[str, int]:
+    """把 data/raw/wencai/volamount/*.parquet 批量合并进个股日线。"""
+    settings = settings or load_settings()
+    ensure_dirs(settings)
+    raw_dir = Path(settings["storage"]["raw_path"]) / "wencai" / "volamount"
+    daily_dir = Path(settings["storage"]["daily_path"])
+    files = sorted(raw_dir.glob("*.parquet"))
+    if start:
+        start_ts = pd.Timestamp(start).normalize()
+        files = [f for f in files if pd.Timestamp(f.stem) >= start_ts]
+    if end:
+        end_ts = pd.Timestamp(end).normalize()
+        files = [f for f in files if pd.Timestamp(f.stem) <= end_ts]
+    if not files:
+        return {"files": 0, "updated": 0, "created": 0, "rows": 0}
+
+    frames: list[pd.DataFrame] = []
+    for path in tqdm(files, desc="读取VOLAMOUNT raw", unit="日"):
+        df = pd.read_parquet(path)
+        if df.empty:
+            continue
+        if "date" not in df.columns:
+            df = df.copy()
+            df["date"] = pd.Timestamp(path.stem)
+        frames.append(df[["date", "code", "volamount"]])
+
+    if not frames:
+        return {"files": len(files), "updated": 0, "created": 0, "rows": 0}
+
+    big = pd.concat(frames, ignore_index=True)
+    stats = apply_volamount_frames(daily_dir, big)
+    stats["files"] = len(files)
+    stats["rows"] = len(big)
+    return stats

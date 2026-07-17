@@ -64,14 +64,18 @@ def update_daily_cmd(
 @click.option("--end", default=None, help="结束交易日 YYYYMMDD")
 @click.option("--days", type=int, default=None, help="最近 N 个交易日")
 @click.option("--force", is_flag=True, help="忽略 raw 缓存重拉")
+@click.option("--fetch-only", is_flag=True, help="只写 raw 不合并 daily")
 def update_volamount_cmd(
     start: str | None,
     end: str | None,
     days: int | None,
     force: bool,
+    fetch_only: bool,
 ) -> None:
     """问财补全全市场 VOLAMOUNT（总笔数）。"""
-    stats = update_volamount(start=start, end=end, days=days, force=force)
+    stats = update_volamount(
+        start=start, end=end, days=days, force=force, fetch_only=fetch_only
+    )
     click.echo(
         f"完成: 拉取 {stats['ok']}，缓存跳过 {stats['skip']}，"
         f"失败 {stats['fail']}，合计 {stats['total']} 日，行数 {stats['rows']}"

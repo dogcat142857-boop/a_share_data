@@ -29,8 +29,9 @@ data/raw/*
 *.csv
 !config/**/*.csv
 
-# Logs / temp
+# Logs / temp / packs
 logs/
 *.log
 .tmp/
 .cache/
+dist/
