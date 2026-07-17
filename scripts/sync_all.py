@@ -30,8 +30,8 @@ def main() -> None:
         days = int(wencai_cfg.get("daily_days", 1))
         vstats = update_volamount(settings=settings, days=days)
         print(
-            f"[volamount] 拉取 {vstats['ok']}，缓存跳过 {vstats['skip']}，"
-            f"失败 {vstats['fail']}，合计 {vstats['total']} 日，行数 {vstats['rows']}"
+            f"[volamount] 拉取 {vstats['ok']} 段，跳过 {vstats['skip']}，"
+            f"失败 {vstats['fail']}，交易日 {vstats['total']}，行数 {vstats['rows']}"
         )
     else:
         print("[volamount] 已禁用（settings.wencai.enabled=false）")

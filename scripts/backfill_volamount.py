@@ -61,8 +61,9 @@ def main() -> None:
         newest_first=True,
     )
     print(
-        f"[fetch] 拉取 {stats['ok']}，跳过 {stats['skip']}，"
-        f"失败 {stats['fail']}，合计 {stats['total']} 日，行数 {stats['rows']}"
+        f"[fetch] 拉取 {stats['ok']} 段，跳过 {stats['skip']}，"
+        f"失败 {stats['fail']}，交易日 {stats['total']}，"
+        f"chunks={stats.get('chunks')}，行数 {stats['rows']}"
     )
 
     if fetch_only:

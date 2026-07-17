@@ -85,8 +85,8 @@ python -m venv .venv
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-1. **Node.js v16+**（问财 `pywencai` 必需）
-2. **问财 Cookie**：复制 `.env.example` → `.env`，填 `WENCAI_COOKIE=...`
+1. （可选）同花顺账号：`.env` 中 `THS_USERNAME` / `THS_PASSWORD`；不填则 thsdk 游客模式  
+2. VOLAMOUNT 用 `thsdk.wencai_nlp` 按月区间一次拉全市场多日总笔数，不再逐日翻页
 
 ```bash
 python -m a_share.cli init
@@ -102,13 +102,14 @@ powershell -ExecutionPolicy Bypass -File scripts\register_daily_task.ps1
 
 计划任务名：`AShareDataDailySync`（工作日 16:00）。
 
-### VOLAMOUNT 全量回填
+### VOLAMOUNT 全量回填（thsdk 按月区间）
 
 ```bash
+# 问句类似：沪深A股,2024年1月2日至2024年1月31日总笔数
 python scripts/backfill_volamount.py --start 20100101
 ```
 
 ## 数据源
 
 - [AKShare](https://github.com/akfamily/akshare)：列表、日历、日线  
-- [pywencai](https://github.com/zsrl/pywencai)：全市场 VOLAMOUNT（需 Cookie，请低频使用）
+- [thsdk](https://pypi.org/project/thsdk/)：`wencai_nlp` 全市场区间总笔数（VOLAMOUNT）

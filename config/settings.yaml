@@ -26,21 +26,23 @@ update:
   # 更新日线时跳过已是最新交易日的股票
   skip_if_fresh: true
 
-# 问财补全 VOLAMOUNT（总笔数 / 成交笔数）
+# VOLAMOUNT（总笔数）—— thsdk.wencai_nlp 按日期区间批量拉取
+# 例：沪深A股,2024年1月2日至2024年1月31日总笔数
 wencai:
   enabled: true
-  # Cookie 优先读环境变量（推荐写在仓库根目录 .env，勿提交）
-  cookie_env: WENCAI_COOKIE
-  cookie: ""
-  # 问句模板；可用 {Y}{m}{d} / {YYYYMMDD} / {YYYY-MM-DD}
-  query_template: "{Y}年{m}月{d}日A股成交笔数"
-  loop: true                 # 翻完全部分页，拿全市场
-  page_sleep: 0.4            # 分页间隔（秒）；全量回填可略降，过高易封
-  day_pause: 0.8             # 交易日之间的间隔
+  source: thsdk
+  universe: "沪深A股"
+  metric: "总笔数"
+  # 每段查询的日历跨度（天），约一个月一次请求覆盖全市场多日
+  chunk_days: 31
+  chunk_pause: 1.0
   max_retries: 3
   retry_pause: 2.0
-  merge_into_daily: true     # 日更时写入 daily；全量回填脚本会先只抓 raw
-  # sync_all 日更时默认补最近 N 个交易日（防漏）
-  daily_days: 1
-  # 全量回填起点（YYYYMMDD）
+  merge_into_daily: true
+  # sync_all 日更时默认补最近 N 个交易日
+  daily_days: 5
   backfill_start: "20100101"
+  # 可选：正式同花顺账号（也可用环境变量 THS_USERNAME / THS_PASSWORD / THS_MAC）
+  username: ""
+  password: ""
+  mac: ""

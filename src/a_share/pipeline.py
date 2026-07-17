@@ -11,13 +11,21 @@ from . import wencai as wencai_api
 from .config import ROOT, ensure_dirs, load_settings
 from .storage import (
     apply_volamount_frames,
-    apply_volamount_snapshot,
-    last_trade_date,
     merge_daily,
     normalize_code,
     read_daily,
     write_daily,
 )
+
+
+def _last_ohlcv_date(df: pd.DataFrame) -> pd.Timestamp | None:
+    """仅把有收盘价的日期视为 OHLCV 已就绪（忽略仅有 volamount 的行）。"""
+    if df is None or df.empty or "close" not in df.columns:
+        return None
+    sub = df[df["close"].notna()]
+    if sub.empty:
+        return None
+    return pd.to_datetime(sub["date"]).max()
 
 
 def _read_watchlist(path: Path) -> list[str]:
@@ -129,7 +137,7 @@ def update_daily(
     for code in tqdm(codes, desc="更新日线", unit="只"):
         try:
             existing = read_daily(daily_dir, code)
-            last = last_trade_date(existing)
+            last = _last_ohlcv_date(existing)
             if skip_if_fresh and last is not None and latest_cal is not None:
                 if last.normalize() >= latest_cal.normalize():
                     skip += 1
@@ -197,6 +205,59 @@ def _volamount_raw_path(settings: dict, trade_date: pd.Timestamp) -> Path:
     return raw / f"{trade_date.strftime('%Y%m%d')}.parquet"
 
 
+def _volamount_chunk_path(
+    settings: dict, start: pd.Timestamp, end: pd.Timestamp
+) -> Path:
+    raw = Path(settings["storage"]["raw_path"]) / "wencai" / "volamount_chunks"
+    return raw / f"{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}.parquet"
+
+
+def _iter_date_chunks(
+    dates: list[pd.Timestamp], chunk_days: int
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """把交易日列表按日历跨度切成若干 [start,end] 区间（默认约一个月）。"""
+    if not dates:
+        return []
+    dates = sorted(pd.Timestamp(d).normalize() for d in dates)
+    chunk_days = max(int(chunk_days), 1)
+    chunks: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    i = 0
+    while i < len(dates):
+        start = dates[i]
+        end_limit = start + pd.Timedelta(days=chunk_days - 1)
+        j = i
+        while j + 1 < len(dates) and dates[j + 1] <= end_limit:
+            j += 1
+        chunks.append((start, dates[j]))
+        i = j + 1
+    return chunks
+
+
+def _chunk_fully_cached(
+    settings: dict,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    dates: list[pd.Timestamp],
+) -> bool:
+    needed = [d for d in dates if start <= d <= end]
+    if not needed:
+        return True
+    return all(_volamount_raw_path(settings, d).exists() for d in needed)
+
+
+def _save_volamount_long(settings: dict, long_df: pd.DataFrame) -> None:
+    if long_df.empty:
+        return
+    data = long_df.copy()
+    data["date"] = pd.to_datetime(data["date"]).dt.normalize()
+    for day, grp in data.groupby("date", sort=True):
+        path = _volamount_raw_path(settings, pd.Timestamp(day))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        grp[["date", "code", "volamount"]].reset_index(drop=True).to_parquet(
+            path, index=False
+        )
+
+
 def update_volamount(
     *,
     settings: dict | None = None,
@@ -208,21 +269,21 @@ def update_volamount(
     newest_first: bool = True,
 ) -> dict[str, int]:
     """
-    用问财按交易日补全全市场 volamount（总笔数），并写入个股日线。
-    默认只更新最近一个交易日；可用 start/end 或 days 做回填。
-
-    fetch_only=True 时只写 raw 横截面，不逐日合并（全量回填更快，事后再 merge）。
-    newest_first=True 时由近到远抓取。
+    用 thsdk.wencai_nlp 按日期区间批量补全全市场 volamount（总笔数）。
+    问句形如：沪深A股,2024年1月2日至2024年1月31日总笔数
     """
     settings = settings or load_settings()
     ensure_dirs(settings)
     wencai_cfg = settings.get("wencai", {})
     if not wencai_cfg.get("enabled", True):
-        return {"ok": 0, "skip": 0, "fail": 0, "total": 0, "rows": 0}
+        return {"ok": 0, "skip": 0, "fail": 0, "total": 0, "rows": 0, "chunks": 0}
 
-    cookie = wencai_api.resolve_wencai_cookie(settings)
     daily_dir = Path(settings["storage"]["daily_path"])
     merge_into_daily = bool(wencai_cfg.get("merge_into_daily", True)) and not fetch_only
+    chunk_days = int(wencai_cfg.get("chunk_days", 31))
+    chunk_pause = float(wencai_cfg.get("chunk_pause", 1.0))
+    universe = str(wencai_cfg.get("universe", "沪深A股"))
+    metric = str(wencai_cfg.get("metric", "总笔数"))
 
     if days is not None and start is None:
         latest = _latest_calendar_date(settings)
@@ -230,65 +291,84 @@ def update_volamount(
             raise RuntimeError("无交易日历，请先运行 update-meta")
         cal_path = Path(settings["storage"]["meta_path"]) / "trade_calendar.parquet"
         cal = pd.read_parquet(cal_path)
-        dates = pd.to_datetime(cal["date"]).sort_values()
-        past = dates[dates <= latest]
+        cal_dates = pd.to_datetime(cal["date"]).sort_values()
+        past = cal_dates[cal_dates <= latest]
         selected = past.tail(max(int(days), 1))
         date_list = [pd.Timestamp(d).normalize() for d in selected.tolist()]
     else:
         date_list = _trade_dates_between(settings, start, end)
 
     if not date_list:
-        return {"ok": 0, "skip": 0, "fail": 0, "total": 0, "rows": 0}
+        return {"ok": 0, "skip": 0, "fail": 0, "total": 0, "rows": 0, "chunks": 0}
 
+    chunks = _iter_date_chunks(date_list, chunk_days)
     if newest_first:
-        date_list = list(reversed(date_list))
+        chunks = list(reversed(chunks))
 
     ok = skip = fail = rows = 0
     errors: list[str] = []
-    day_pause = float(wencai_cfg.get("day_pause", 1.5))
     progress_path = Path(settings["storage"]["meta_path"]) / "volamount_progress.txt"
+    merged_frames: list[pd.DataFrame] = []
 
-    for trade_date in tqdm(date_list, desc="更新VOLAMOUNT", unit="日"):
-        raw_path = _volamount_raw_path(settings, trade_date)
-        ymd = trade_date.strftime("%Y%m%d")
+    for chunk_start, chunk_end in tqdm(chunks, desc="更新VOLAMOUNT", unit="段"):
+        label = f"{chunk_start.strftime('%Y%m%d')}-{chunk_end.strftime('%Y%m%d')}"
         try:
-            if raw_path.exists() and not force:
-                snap = pd.read_parquet(raw_path)
+            if not force and _chunk_fully_cached(
+                settings, chunk_start, chunk_end, date_list
+            ):
+                parts = [
+                    pd.read_parquet(_volamount_raw_path(settings, d))
+                    for d in date_list
+                    if chunk_start <= d <= chunk_end
+                    and _volamount_raw_path(settings, d).exists()
+                ]
+                long_df = (
+                    pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+                )
                 skip += 1
             else:
-                snap = wencai_api.fetch_wencai_volamount(
-                    trade_date,
-                    cookie=cookie,
-                    query_template=wencai_cfg.get(
-                        "query_template", "{Y}年{m}月{d}日A股成交笔数"
-                    ),
-                    loop=bool(wencai_cfg.get("loop", True)),
-                    page_sleep=float(wencai_cfg.get("page_sleep", 1.0)),
+                long_df = wencai_api.fetch_volamount_range(
+                    chunk_start,
+                    chunk_end,
+                    settings=settings,
+                    universe=universe,
+                    metric=metric,
                     max_retries=int(wencai_cfg.get("max_retries", 3)),
                     retry_pause=float(wencai_cfg.get("retry_pause", 2.0)),
                 )
-                if snap.empty:
-                    raise ValueError("问财返回空表，可能 Cookie 失效或问句无结果")
-                raw_path.parent.mkdir(parents=True, exist_ok=True)
-                snap.to_parquet(raw_path, index=False)
+                if long_df.empty:
+                    raise ValueError("问财返回空表")
+                wanted = {d for d in date_list if chunk_start <= d <= chunk_end}
+                long_df = long_df[
+                    pd.to_datetime(long_df["date"]).dt.normalize().isin(wanted)
+                ]
+                chunk_path = _volamount_chunk_path(settings, chunk_start, chunk_end)
+                chunk_path.parent.mkdir(parents=True, exist_ok=True)
+                long_df.to_parquet(chunk_path, index=False)
+                _save_volamount_long(settings, long_df)
                 ok += 1
-                time.sleep(day_pause)
+                time.sleep(chunk_pause)
 
-            if merge_into_daily:
-                apply_volamount_snapshot(daily_dir, trade_date, snap)
-            rows += len(snap)
+            rows += len(long_df)
+            if merge_into_daily and not long_df.empty:
+                merged_frames.append(long_df)
+
             progress_path.write_text(
-                f"last={ymd}\nok={ok}\nskip={skip}\nfail={fail}\n",
+                f"last={label}\nok={ok}\nskip={skip}\nfail={fail}\nrows={rows}\n",
                 encoding="utf-8",
             )
         except Exception as exc:  # noqa: BLE001
             fail += 1
-            errors.append(f"{ymd}: {exc}")
+            errors.append(f"{label}: {exc}")
             progress_path.write_text(
-                f"last={ymd}\nok={ok}\nskip={skip}\nfail={fail}\nerr={exc}\n",
+                f"last={label}\nok={ok}\nskip={skip}\nfail={fail}\nerr={exc}\n",
                 encoding="utf-8",
             )
-            time.sleep(day_pause)
+            time.sleep(chunk_pause)
+
+    if merge_into_daily and merged_frames:
+        big = pd.concat(merged_frames, ignore_index=True)
+        apply_volamount_frames(daily_dir, big)
 
     if errors:
         log_dir = ROOT / "logs"
@@ -304,6 +384,7 @@ def update_volamount(
         "fail": fail,
         "total": len(date_list),
         "rows": rows,
+        "chunks": len(chunks),
     }
 
 
@@ -321,10 +402,14 @@ def merge_volamount_from_raw(
     files = sorted(raw_dir.glob("*.parquet"))
     if start:
         start_ts = pd.Timestamp(start).normalize()
-        files = [f for f in files if pd.Timestamp(f.stem) >= start_ts]
+        files = [
+            f for f in files if f.stem.isdigit() and pd.Timestamp(f.stem) >= start_ts
+        ]
     if end:
         end_ts = pd.Timestamp(end).normalize()
-        files = [f for f in files if pd.Timestamp(f.stem) <= end_ts]
+        files = [
+            f for f in files if f.stem.isdigit() and pd.Timestamp(f.stem) <= end_ts
+        ]
     if not files:
         return {"files": 0, "updated": 0, "created": 0, "rows": 0}
 

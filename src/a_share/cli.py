@@ -77,8 +77,8 @@ def update_volamount_cmd(
         start=start, end=end, days=days, force=force, fetch_only=fetch_only
     )
     click.echo(
-        f"完成: 拉取 {stats['ok']}，缓存跳过 {stats['skip']}，"
-        f"失败 {stats['fail']}，合计 {stats['total']} 日，行数 {stats['rows']}"
+        f"完成: 拉取 {stats['ok']} 段，缓存跳过 {stats['skip']}，"
+        f"失败 {stats['fail']}，交易日 {stats['total']}，行数 {stats['rows']}"
     )
 
 

@@ -22,7 +22,7 @@ sync = [
   "click>=8.1.0",
   "tqdm>=4.66.0",
   "requests>=2.31.0",
-  "pywencai>=0.13.1",
+  "thsdk>=1.7.18",
 ]
 all = ["a-share-data[sync]"]
 
