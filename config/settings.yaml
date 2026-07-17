@@ -25,3 +25,20 @@ universe:
 update:
   # 更新日线时跳过已是最新交易日的股票
   skip_if_fresh: true
+
+# 问财补全 VOLAMOUNT（总笔数 / 成交笔数）
+wencai:
+  enabled: true
+  # Cookie 优先读环境变量（推荐写在仓库根目录 .env，勿提交）
+  cookie_env: WENCAI_COOKIE
+  cookie: ""
+  # 问句模板；可用 {Y}{m}{d} / {YYYYMMDD} / {YYYY-MM-DD}
+  query_template: "{Y}年{m}月{d}日A股成交笔数"
+  loop: true                 # 翻完全部分页，拿全市场
+  page_sleep: 1.0            # 分页间隔（秒）
+  day_pause: 1.5             # 交易日之间的间隔
+  max_retries: 3
+  retry_pause: 2.0
+  merge_into_daily: true     # 写入 data/daily/{code}.parquet 的 volamount 列
+  # sync_all 日更时默认补最近 N 个交易日（防漏）
+  daily_days: 1

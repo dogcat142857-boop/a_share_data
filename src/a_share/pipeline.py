@@ -7,8 +7,10 @@ import pandas as pd
 from tqdm import tqdm
 
 from . import fetchers
+from . import wencai as wencai_api
 from .config import ROOT, ensure_dirs, load_settings
 from .storage import (
+    apply_volamount_snapshot,
     last_trade_date,
     merge_daily,
     normalize_code,
@@ -166,3 +168,121 @@ def update_daily(
         )
 
     return {"ok": ok, "skip": skip, "fail": fail, "total": len(codes)}
+
+
+def _trade_dates_between(
+    settings: dict,
+    start: str | None,
+    end: str | None,
+) -> list[pd.Timestamp]:
+    cal_path = Path(settings["storage"]["meta_path"]) / "trade_calendar.parquet"
+    if not cal_path.exists():
+        update_meta(settings)
+    cal = pd.read_parquet(cal_path)
+    dates = pd.to_datetime(cal["date"]).sort_values()
+    today = pd.Timestamp.today().normalize()
+    end_ts = pd.Timestamp(end) if end else today
+    end_ts = min(end_ts.normalize(), today)
+    if start:
+        start_ts = pd.Timestamp(start).normalize()
+    else:
+        start_ts = end_ts
+    mask = (dates >= start_ts) & (dates <= end_ts)
+    return [pd.Timestamp(d).normalize() for d in dates[mask].tolist()]
+
+
+def _volamount_raw_path(settings: dict, trade_date: pd.Timestamp) -> Path:
+    raw = Path(settings["storage"]["raw_path"]) / "wencai" / "volamount"
+    return raw / f"{trade_date.strftime('%Y%m%d')}.parquet"
+
+
+def update_volamount(
+    *,
+    settings: dict | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    force: bool = False,
+    days: int | None = None,
+) -> dict[str, int]:
+    """
+    用问财按交易日补全全市场 volamount（总笔数），并写入个股日线。
+    默认只更新最近一个交易日；可用 start/end 或 days 做回填。
+    """
+    settings = settings or load_settings()
+    ensure_dirs(settings)
+    wencai_cfg = settings.get("wencai", {})
+    if not wencai_cfg.get("enabled", True):
+        return {"ok": 0, "skip": 0, "fail": 0, "total": 0, "rows": 0}
+
+    cookie = wencai_api.resolve_wencai_cookie(settings)
+    daily_dir = Path(settings["storage"]["daily_path"])
+
+    if days is not None and start is None:
+        latest = _latest_calendar_date(settings)
+        if latest is None:
+            raise RuntimeError("无交易日历，请先运行 update-meta")
+        # 取最近 N 个交易日
+        cal_path = Path(settings["storage"]["meta_path"]) / "trade_calendar.parquet"
+        cal = pd.read_parquet(cal_path)
+        dates = pd.to_datetime(cal["date"]).sort_values()
+        past = dates[dates <= latest]
+        selected = past.tail(max(int(days), 1))
+        date_list = [pd.Timestamp(d).normalize() for d in selected.tolist()]
+    else:
+        date_list = _trade_dates_between(settings, start, end)
+
+    if not date_list:
+        return {"ok": 0, "skip": 0, "fail": 0, "total": 0, "rows": 0}
+
+    ok = skip = fail = rows = 0
+    errors: list[str] = []
+    day_pause = float(wencai_cfg.get("day_pause", 1.5))
+
+    for trade_date in tqdm(date_list, desc="更新VOLAMOUNT", unit="日"):
+        raw_path = _volamount_raw_path(settings, trade_date)
+        try:
+            if raw_path.exists() and not force:
+                snap = pd.read_parquet(raw_path)
+                skip += 1
+            else:
+                snap = wencai_api.fetch_wencai_volamount(
+                    trade_date,
+                    cookie=cookie,
+                    query_template=wencai_cfg.get(
+                        "query_template", "{Y}年{m}月{d}日A股成交笔数"
+                    ),
+                    loop=bool(wencai_cfg.get("loop", True)),
+                    page_sleep=float(wencai_cfg.get("page_sleep", 1.0)),
+                    max_retries=int(wencai_cfg.get("max_retries", 3)),
+                    retry_pause=float(wencai_cfg.get("retry_pause", 2.0)),
+                )
+                if snap.empty:
+                    raise ValueError("问财返回空表，可能 Cookie 失效或问句无结果")
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                snap.to_parquet(raw_path, index=False)
+                ok += 1
+                time.sleep(day_pause)
+
+            if bool(wencai_cfg.get("merge_into_daily", True)):
+                apply_volamount_snapshot(daily_dir, trade_date, snap)
+            rows += len(snap)
+        except Exception as exc:  # noqa: BLE001
+            fail += 1
+            errors.append(f"{trade_date.strftime('%Y%m%d')}: {exc}")
+            time.sleep(day_pause)
+
+    if errors:
+        log_dir = ROOT / "logs"
+        log_dir.mkdir(exist_ok=True)
+        stamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        (log_dir / f"volamount_errors_{stamp}.log").write_text(
+            "\n".join(errors), encoding="utf-8"
+        )
+
+    return {
+        "ok": ok,
+        "skip": skip,
+        "fail": fail,
+        "total": len(date_list),
+        "rows": rows,
+    }

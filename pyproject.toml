@@ -17,6 +17,7 @@ dependencies = [
   "click>=8.1.0",
   "tqdm>=4.66.0",
   "requests>=2.31.0",
+  "pywencai>=0.13.1",
 ]
 
 [project.scripts]

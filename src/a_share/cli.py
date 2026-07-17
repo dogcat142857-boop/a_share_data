@@ -11,7 +11,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from a_share.config import ensure_dirs, load_settings
-from a_share.pipeline import resolve_universe, update_daily, update_meta
+from a_share.pipeline import resolve_universe, update_daily, update_meta, update_volamount
 from a_share.storage import normalize_code, read_daily
 
 
@@ -56,6 +56,25 @@ def update_daily_cmd(
     click.echo(
         f"完成: 更新 {stats['ok']}，跳过 {stats['skip']}，"
         f"失败 {stats['fail']}，合计 {stats['total']}"
+    )
+
+
+@main.command("update-volamount")
+@click.option("--start", default=None, help="起始交易日 YYYYMMDD")
+@click.option("--end", default=None, help="结束交易日 YYYYMMDD")
+@click.option("--days", type=int, default=None, help="最近 N 个交易日")
+@click.option("--force", is_flag=True, help="忽略 raw 缓存重拉")
+def update_volamount_cmd(
+    start: str | None,
+    end: str | None,
+    days: int | None,
+    force: bool,
+) -> None:
+    """问财补全全市场 VOLAMOUNT（总笔数）。"""
+    stats = update_volamount(start=start, end=end, days=days, force=force)
+    click.echo(
+        f"完成: 拉取 {stats['ok']}，缓存跳过 {stats['skip']}，"
+        f"失败 {stats['fail']}，合计 {stats['total']} 日，行数 {stats['rows']}"
     )
 
 

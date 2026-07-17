@@ -1,6 +1,6 @@
 # a_share_data
 
-A 股个股数据日常维护仓库：拉取股票列表 / 交易日历，按股票增量更新前复权日线，本地以 Parquet 存储。
+A 股个股数据日常维护仓库：拉取股票列表 / 交易日历，按股票增量更新前复权日线，并用问财补全全市场 **VOLAMOUNT（总笔数）**，本地以 Parquet 存储。
 
 ## 结构
 
@@ -9,9 +9,9 @@ config/           # 配置与自选股
 data/
   meta/           # 股票列表、交易日历
   daily/          # 个股日线：{code}.parquet
-  raw/            # 原始备份（可选）
+  raw/wencai/     # 问财横截面原始备份
 src/a_share/      # 核心库
-scripts/          # 一键脚本
+scripts/          # 一键脚本 / 计划任务
 ```
 
 ## 快速开始
@@ -20,36 +20,44 @@ scripts/          # 一键脚本
 python -m venv .venv
 # Windows（务必用项目虚拟环境，避免与 Anaconda 全局包冲突）
 .venv\Scripts\activate
-pip install -r requirements.txt
-# 或可编辑安装（注册 a-share 命令）
-pip install -e .
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-初始化目录并更新元数据：
+依赖说明：
+
+1. **Node.js v16+**（问财 `pywencai` 执行 JS 必需）
+2. **问财 Cookie**：复制 `.env.example` 为 `.env`，填入 `WENCAI_COOKIE=...`  
+   （浏览器登录 [问财](https://www.iwencai.com) → DevTools → Network → 请求头 Cookie）
+
+初始化：
 
 ```bash
 python -m a_share.cli init
 python scripts/update_meta.py
 ```
 
-更新日线（默认全市场；也可改 `config/settings.yaml` 为自选股模式）：
+## 日常更新
 
 ```bash
-# 日常一键：元数据 + 日线增量
+# 一键：元数据 + 日线 OHLCV + VOLAMOUNT
 python scripts/sync_all.py
 
-# 只更新日线
+# 仅 OHLCV
 python scripts/update_daily.py
 
-# 指定个股
-python scripts/update_daily.py -c 000001 -c 600519
+# 仅 VOLAMOUNT（默认最近 1 个交易日；可回填）
+python scripts/update_volamount.py
+python scripts/update_volamount.py --days 5
+python scripts/update_volamount.py --start 20240102 --end 20240110
 ```
 
-查看本地数据：
+### 自动每日更新（Windows）
 
-```bash
-python -m a_share.cli show 000001 --tail 10
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\register_daily_task.ps1
 ```
+
+会注册计划任务 `AShareDataDailySync`：工作日 **16:00** 执行 `scripts/run_daily_sync.ps1`（自动加载 `.env`）。
 
 ## 配置
 
@@ -58,24 +66,21 @@ python -m a_share.cli show 000001 --tail 10
 | 项 | 说明 |
 | --- | --- |
 | `universe.mode` | `all` 全市场，或 `watchlist` 自选 |
-| `universe.watchlist` | 自选列表路径，默认 `config/watchlist.txt` |
-| `fetch.default_start` | 无本地数据时的起始日 |
-| `fetch.request_pause` | 请求间隔，降低限流风险 |
-
-自选股示例（`config/watchlist.txt`）：
-
-```
-000001
-600519
-300750
-```
+| `wencai.enabled` | 是否启用问财 VOLAMOUNT |
+| `wencai.daily_days` | `sync_all` 每次补最近 N 个交易日 |
+| `wencai.query_template` | 问句模板，默认 `{Y}年{m}月{d}日A股成交笔数` |
 
 ## 数据字段
 
-日线 Parquet 列：`date, code, open, high, low, close, volume, amount, turnover, pct_chg`（前复权）。
+日线列：`date, code, open, high, low, close, volume, amount, turnover, pct_chg, volamount`  
 
-> 大数据文件默认不进 Git（见 `.gitignore`）。建议本地维护，或用网盘 / 对象存储备份 `data/`。
+- OHLCV 等来自 AKShare（前复权）  
+- `volamount` 来自问财（成交笔数 / 总笔数）  
+- 原始横截面备份：`data/raw/wencai/volamount/{YYYYMMDD}.parquet`
+
+> 大数据文件默认不进 Git。Cookie 仅放 `.env`，勿提交。
 
 ## 数据源
 
-当前使用 [AKShare](https://github.com/akfamily/akshare) 免费接口，无需 token。接口偶发失败时会自动重试，失败明细写入 `logs/`。
+- [AKShare](https://github.com/akfamily/akshare)：列表、日历、日线  
+- [pywencai](https://github.com/zsrl/pywencai)：全市场 VOLAMOUNT（需 Cookie，请低频使用）
