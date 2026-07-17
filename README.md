@@ -2,10 +2,14 @@
 
 A 股个股数据日常维护仓库：
 
-- **日线 OHLCV**：baostock 前复权（`adjustflag=2`）
-- **VOLAMOUNT（总笔数）**：同花顺问财（`thsdk.wencai_nlp`）按区间批量拉取，合并进个股日线
+- **日线**：baostock 前复权（`adjustflag=2`），含 baostock 可提供的全部交易字段
+- **VOLAMOUNT（总笔数）**：同花顺问财（`thsdk.wencai_nlp`）按区间批量拉取，合并进个股 parquet
 
-## 数据存在哪
+## 字段
+
+`date, code, open, high, low, close, preclose, volume, amount, turnover, pct_chg, tradestatus, pe_ttm, pb_mrq, ps_ttm, pcf_ncf_ttm, is_st, volamount`
+
+## 数据目录
 
 默认都在仓库下的 `data/`（**不进 Git**，体积大，本地/网盘维护）：
 
@@ -20,8 +24,6 @@ data/
   raw/wencai/volamount/
     20260717.parquet        # 问财单日全市场总笔数横截面
 ```
-
-日线字段：`date, code, open, high, low, close, volume, amount, turnover, pct_chg, volamount`
 
 ## 在其他项目里调用
 
@@ -93,23 +95,44 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```bash
 python -m a_share.cli init
 python scripts/update_meta.py
-# 全量重建（清空 daily → baostock 重拉 → 合并已有 volamount）
+
+# 首次全量（推荐：清空 → baostock 日线 → 问财 volamount → 合并）
+python scripts/initial_build.py --workers 8
+
+# 或分步：仅重建日线
 python scripts/rebuild_from_baostock.py --workers 8
-# 或增量/全量日线
 python scripts/update_daily.py --force --workers 8
+
 # 问财补 VOLAMOUNT 并合并进日线
 python scripts/backfill_volamount.py --start 20100101
-# 或日常一键
+
+# 日常一键增量
 python scripts/sync_all.py
 ```
 
-### 自动每日更新（Windows）
+## 每日增量
+
+`sync_all.py` 会：
+
+- 更新 meta（股票列表 / 交易日历）
+- baostock 增量补日线（跳过已是最新交易日的股票）
+- 问财补最近 5 个交易日 volamount 并合并
+
+### 自动日更
+
+**Windows**（工作日 16:00）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\register_daily_task.ps1
 ```
 
 计划任务名：`AShareDataDailySync`（工作日 16:00）。
+
+**Linux**：
+
+```bash
+bash scripts/register_daily_cron.sh
+```
 
 ### VOLAMOUNT 全量回填（thsdk 按月区间）
 
@@ -120,6 +143,6 @@ python scripts/backfill_volamount.py --start 20100101
 
 ## 数据源
 
-- [baostock](http://baostock.com/)：沪深 A 股前复权日线、股票列表、交易日历  
+- [baostock](http://baostock.com/)：沪深 A 股前复权日线、估值/状态字段、股票列表、交易日历  
 - [thsdk](https://pypi.org/project/thsdk/)：`wencai_nlp` 全市场区间总笔数（VOLAMOUNT）  
 - [AKShare](https://github.com/akfamily/akshare)：列表/日历的备用回退

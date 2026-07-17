@@ -63,15 +63,42 @@ def _f(x) -> float:
         return float("nan")
 
 
+def _i(x, default: int = 0) -> int:
+    if x in ("", None):
+        return default
+    try:
+        return int(float(x))
+    except (TypeError, ValueError):
+        return default
+
+
 def _finalize_daily(df: pd.DataFrame, code: str) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=DAILY_COLUMNS)
     out = df.copy()
     out["date"] = pd.to_datetime(out["date"]).dt.normalize()
     out["code"] = normalize_code(code)
-    for col in ("open", "high", "low", "close", "volume", "amount", "turnover", "pct_chg"):
+    float_cols = (
+        "open",
+        "high",
+        "low",
+        "close",
+        "preclose",
+        "volume",
+        "amount",
+        "turnover",
+        "pct_chg",
+        "pe_ttm",
+        "pb_mrq",
+        "ps_ttm",
+        "pcf_ncf_ttm",
+    )
+    for col in float_cols:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
+    for col in ("tradestatus", "is_st"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64")
     if "pct_chg" not in out.columns or out["pct_chg"].isna().all():
         close = pd.to_numeric(out["close"], errors="coerce")
         out["pct_chg"] = close.pct_change() * 100
@@ -245,13 +272,17 @@ def fetch_daily_hist(
                     high,
                     low,
                     close,
-                    _preclose,
+                    preclose,
                     volume,
                     amount,
                     turn,
-                    _tradestatus,
+                    tradestatus,
                     pct_chg,
-                    *_rest,
+                    pe_ttm,
+                    pb_mrq,
+                    ps_ttm,
+                    pcf_ttm,
+                    is_st,
                 ) = rs.get_row_data()
                 if not close:
                     continue
@@ -262,10 +293,17 @@ def fetch_daily_hist(
                         "high": _f(high),
                         "low": _f(low),
                         "close": _f(close),
+                        "preclose": _f(preclose),
                         "volume": _f(volume) if volume not in ("", None) else 0.0,
                         "amount": _f(amount) if amount not in ("", None) else 0.0,
                         "turnover": _f(turn),
                         "pct_chg": _f(pct_chg),
+                        "tradestatus": _i(tradestatus, 0),
+                        "pe_ttm": _f(pe_ttm),
+                        "pb_mrq": _f(pb_mrq),
+                        "ps_ttm": _f(ps_ttm),
+                        "pcf_ncf_ttm": _f(pcf_ttm),
+                        "is_st": _i(is_st, 0),
                     }
                 )
             return _finalize_daily(pd.DataFrame(rows), code)
@@ -340,6 +378,8 @@ def fetch_daily_worker(
                 retry_pause=retry_pause,
                 manage_login=True,
             )
+            if df.empty or not df["close"].notna().any():
+                return code, None, "empty or no close"
             return code, df, None
         except Exception as exc2:  # noqa: BLE001
             return code, None, f"{exc} | fallback: {exc2}"

@@ -11,11 +11,18 @@ DAILY_COLUMNS = [
     "high",
     "low",
     "close",
+    "preclose",
     "volume",
     "amount",
     "turnover",
     "pct_chg",
-    "volamount",  # 总笔数 / VOLAMOUNT（问财补全）
+    "tradestatus",
+    "pe_ttm",
+    "pb_mrq",
+    "ps_ttm",
+    "pcf_ncf_ttm",
+    "is_st",
+    "volamount",  # 总笔数（问财 thsdk.wencai_nlp）
 ]
 
 
