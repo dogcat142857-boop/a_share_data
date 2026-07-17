@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -112,7 +113,12 @@ def update_daily(
     start: str | None = None,
     end: str | None = None,
     force: bool = False,
+    workers: int | None = None,
 ) -> dict[str, int]:
+    """
+    用 baostock 更新个股日线。
+    workers>1 时用多进程并行（baostock 会话是进程级全局状态）。
+    """
     settings = settings or load_settings()
     ensure_dirs(settings)
     fetch_cfg = settings.get("fetch", {})
@@ -125,48 +131,92 @@ def update_daily(
     else:
         codes = [normalize_code(c) for c in codes]
 
+    # 排除北交所
+    codes = [
+        c
+        for c in codes
+        if not c.startswith(("4", "8")) and not c.startswith("92")
+    ]
+
     default_start = start or fetch_cfg.get("default_start", "20100101")
     end = end or pd.Timestamp.today().strftime("%Y%m%d")
-    pause = float(fetch_cfg.get("request_pause", 0.35))
+    pause = float(fetch_cfg.get("request_pause", 0.05))
     skip_if_fresh = bool(update_cfg.get("skip_if_fresh", True)) and not force
     latest_cal = _latest_calendar_date(settings) if skip_if_fresh else None
+    max_retries = int(fetch_cfg.get("max_retries", 3))
+    retry_pause = float(fetch_cfg.get("retry_pause", 2.0))
+    n_workers = int(workers if workers is not None else fetch_cfg.get("workers", 8))
 
-    ok = skip = fail = 0
-    errors: list[str] = []
-
-    for code in tqdm(codes, desc="更新日线", unit="只"):
-        try:
-            existing = read_daily(daily_dir, code)
-            last = _last_ohlcv_date(existing)
-            if skip_if_fresh and last is not None and latest_cal is not None:
-                if last.normalize() >= latest_cal.normalize():
-                    skip += 1
-                    continue
-
-            if last is not None and not force:
-                pull_start = (last + pd.Timedelta(days=1)).strftime("%Y%m%d")
-            else:
-                pull_start = default_start
-
-            if pull_start > end:
+    jobs: list[tuple[str, str, str, int, float]] = []
+    skip = 0
+    for code in codes:
+        existing = read_daily(daily_dir, code)
+        last = _last_ohlcv_date(existing)
+        if skip_if_fresh and last is not None and latest_cal is not None:
+            if last.normalize() >= latest_cal.normalize():
                 skip += 1
                 continue
+        if last is not None and not force:
+            pull_start = (last + pd.Timedelta(days=1)).strftime("%Y%m%d")
+        else:
+            pull_start = default_start
+        if pull_start > end:
+            skip += 1
+            continue
+        jobs.append((code, pull_start, end, max_retries, retry_pause))
 
-            new = fetchers.fetch_daily_hist(
-                code,
-                pull_start,
-                end,
-                max_retries=fetch_cfg.get("max_retries", 3),
-                retry_pause=fetch_cfg.get("retry_pause", 2.0),
-            )
-            merged = merge_daily(existing, new)
-            write_daily(daily_dir, code, merged)
-            ok += 1
-            time.sleep(pause)
-        except Exception as exc:  # noqa: BLE001
-            fail += 1
-            errors.append(f"{code}: {exc}")
-            time.sleep(pause)
+    ok = fail = 0
+    errors: list[str] = []
+
+    def _commit(code: str, new: pd.DataFrame) -> None:
+        existing = read_daily(daily_dir, code)
+        # force 时用新 OHLCV 覆盖同日价量，仍通过 merge 保留已有 volamount
+        merged = merge_daily(existing, new)
+        write_daily(daily_dir, code, merged)
+
+    if n_workers <= 1 or len(jobs) <= 1:
+        for code, pull_start, pull_end, *_ in tqdm(jobs, desc="更新日线(baostock)", unit="只"):
+            try:
+                new = fetchers.fetch_daily_hist(
+                    code,
+                    pull_start,
+                    pull_end,
+                    max_retries=max_retries,
+                    retry_pause=retry_pause,
+                )
+                _commit(code, new)
+                ok += 1
+                if pause > 0:
+                    time.sleep(pause)
+            except Exception as exc:  # noqa: BLE001
+                fail += 1
+                errors.append(f"{code}: {exc}")
+    else:
+        with ProcessPoolExecutor(
+            max_workers=max(1, n_workers),
+            initializer=fetchers._worker_login,
+        ) as pool:
+            futs = {
+                pool.submit(fetchers.fetch_daily_worker, job): job[0] for job in jobs
+            }
+            for fut in tqdm(
+                as_completed(futs),
+                total=len(futs),
+                desc=f"更新日线(baostock×{n_workers})",
+                unit="只",
+            ):
+                code = futs[fut]
+                try:
+                    code, new, err = fut.result()
+                    if err or new is None:
+                        fail += 1
+                        errors.append(f"{code}: {err or 'empty'}")
+                        continue
+                    _commit(code, new)
+                    ok += 1
+                except Exception as exc:  # noqa: BLE001
+                    fail += 1
+                    errors.append(f"{code}: {exc}")
 
     if errors:
         log_dir = ROOT / "logs"

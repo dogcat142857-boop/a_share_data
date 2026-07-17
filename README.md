@@ -1,6 +1,9 @@
 # a_share_data
 
-A 股个股数据日常维护仓库：拉取股票列表 / 交易日历，按股票增量更新前复权日线，并用问财补全全市场 **VOLAMOUNT（总笔数）**，本地以 Parquet 存储。
+A 股个股数据日常维护仓库：
+
+- **日线 OHLCV**：baostock 前复权（`adjustflag=2`）
+- **VOLAMOUNT（总笔数）**：同花顺问财（`thsdk.wencai_nlp`）按区间批量拉取，合并进个股日线
 
 ## 数据存在哪
 
@@ -9,7 +12,7 @@ A 股个股数据日常维护仓库：拉取股票列表 / 交易日历，按股
 ```
 data/
   meta/
-    stock_list.parquet      # 股票列表
+    stock_list.parquet      # 股票列表（沪深 A，不含北交所）
     trade_calendar.parquet  # 交易日历
   daily/
     000001.parquet          # 个股日线（一股一文件）
@@ -32,7 +35,6 @@ pip install "a-share-data @ git+https://github.com/dogcat142857-boop/a_share_dat
 import os
 from a_share import load_daily, list_codes, load_volamount_snapshot
 
-# 指向本机维护机上的 data 目录（或解压后的 data）
 os.environ["A_SHARE_DATA_ROOT"] = r"C:\Users\UnicornSelected-06\a_share_data\data"
 
 df = load_daily("000001", start="2024-01-01")
@@ -86,11 +88,16 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
 1. （可选）同花顺账号：`.env` 中 `THS_USERNAME` / `THS_PASSWORD`；不填则 thsdk 游客模式  
-2. VOLAMOUNT 用 `thsdk.wencai_nlp` 按月区间一次拉全市场多日总笔数，不再逐日翻页
+2. VOLAMOUNT 用 `thsdk.wencai_nlp` 按月区间一次拉全市场多日总笔数
 
 ```bash
 python -m a_share.cli init
 python scripts/update_meta.py
+# 全量日线（baostock，多进程；耗时较长）
+python scripts/update_daily.py --force --workers 12
+# 问财补 VOLAMOUNT 并合并进日线
+python scripts/backfill_volamount.py --start 20100101
+# 或日常一键
 python scripts/sync_all.py
 ```
 
@@ -111,5 +118,6 @@ python scripts/backfill_volamount.py --start 20100101
 
 ## 数据源
 
-- [AKShare](https://github.com/akfamily/akshare)：列表、日历、日线  
-- [thsdk](https://pypi.org/project/thsdk/)：`wencai_nlp` 全市场区间总笔数（VOLAMOUNT）
+- [baostock](http://baostock.com/)：沪深 A 股前复权日线、股票列表、交易日历  
+- [thsdk](https://pypi.org/project/thsdk/)：`wencai_nlp` 全市场区间总笔数（VOLAMOUNT）  
+- [AKShare](https://github.com/akfamily/akshare)：列表/日历的备用回退

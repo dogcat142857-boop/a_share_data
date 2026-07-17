@@ -44,15 +44,17 @@ def update_meta_cmd() -> None:
 @click.option("--start", default=None, help="起始日期 YYYYMMDD（全量/强制时）")
 @click.option("--end", default=None, help="结束日期 YYYYMMDD")
 @click.option("--force", is_flag=True, help="忽略本地增量，按 start 重拉")
+@click.option("--workers", type=int, default=None, help="baostock 并行进程数")
 def update_daily_cmd(
     code: tuple[str, ...],
     start: str | None,
     end: str | None,
     force: bool,
+    workers: int | None,
 ) -> None:
-    """增量更新个股日线（默认全市场或 watchlist）。"""
+    """增量更新个股日线（baostock 前复权，默认全市场或 watchlist）。"""
     codes = list(code) if code else None
-    stats = update_daily(codes, start=start, end=end, force=force)
+    stats = update_daily(codes, start=start, end=end, force=force, workers=workers)
     click.echo(
         f"完成: 更新 {stats['ok']}，跳过 {stats['skip']}，"
         f"失败 {stats['fail']}，合计 {stats['total']}"

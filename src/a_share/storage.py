@@ -24,9 +24,13 @@ def daily_path(daily_dir: Path, code: str) -> Path:
 
 
 def normalize_code(code: str) -> str:
+    """统一为 6 位数字代码。兼容 sh.600000 / 000001.SZ / 600000。"""
     code = str(code).strip().upper()
-    if "." in code:
-        code = code.split(".")[0]
+    if code.startswith(("SH.", "SZ.", "BJ.")):
+        code = code.split(".", 1)[1]
+    elif "." in code:
+        left, right = code.split(".", 1)
+        code = left if left[:1].isdigit() else right
     digits = "".join(ch for ch in code if ch.isdigit())
     if digits:
         return digits.zfill(6)[-6:]
