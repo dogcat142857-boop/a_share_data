@@ -11,7 +11,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from a_share.config import ensure_dirs, load_settings
-from a_share.pipeline import resolve_universe, update_daily, update_meta
+from a_share.pipeline import resolve_universe, update_daily, update_meta, update_volamount
 from a_share.storage import normalize_code, read_daily
 
 
@@ -44,18 +44,43 @@ def update_meta_cmd() -> None:
 @click.option("--start", default=None, help="起始日期 YYYYMMDD（全量/强制时）")
 @click.option("--end", default=None, help="结束日期 YYYYMMDD")
 @click.option("--force", is_flag=True, help="忽略本地增量，按 start 重拉")
+@click.option("--workers", type=int, default=None, help="baostock 并行进程数")
 def update_daily_cmd(
     code: tuple[str, ...],
     start: str | None,
     end: str | None,
     force: bool,
+    workers: int | None,
 ) -> None:
-    """增量更新个股日线（默认全市场或 watchlist）。"""
+    """增量更新个股日线（baostock 前复权，默认全市场或 watchlist）。"""
     codes = list(code) if code else None
-    stats = update_daily(codes, start=start, end=end, force=force)
+    stats = update_daily(codes, start=start, end=end, force=force, workers=workers)
     click.echo(
         f"完成: 更新 {stats['ok']}，跳过 {stats['skip']}，"
         f"失败 {stats['fail']}，合计 {stats['total']}"
+    )
+
+
+@main.command("update-volamount")
+@click.option("--start", default=None, help="起始交易日 YYYYMMDD")
+@click.option("--end", default=None, help="结束交易日 YYYYMMDD")
+@click.option("--days", type=int, default=None, help="最近 N 个交易日")
+@click.option("--force", is_flag=True, help="忽略 raw 缓存重拉")
+@click.option("--fetch-only", is_flag=True, help="只写 raw 不合并 daily")
+def update_volamount_cmd(
+    start: str | None,
+    end: str | None,
+    days: int | None,
+    force: bool,
+    fetch_only: bool,
+) -> None:
+    """问财补全全市场 VOLAMOUNT（总笔数）。"""
+    stats = update_volamount(
+        start=start, end=end, days=days, force=force, fetch_only=fetch_only
+    )
+    click.echo(
+        f"完成: 拉取 {stats['ok']} 段，缓存跳过 {stats['skip']}，"
+        f"失败 {stats['fail']}，交易日 {stats['total']}，行数 {stats['rows']}"
     )
 
 

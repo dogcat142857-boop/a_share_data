@@ -4,20 +4,32 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "a-share-data"
-version = "0.1.0"
-description = "A股个股数据日常维护框架"
+version = "0.2.0"
+description = "A股个股数据维护与读取：日线 OHLCV + VOLAMOUNT"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "akshare>=1.14.0",
-  "numpy>=1.26,<2.3",
   "pandas>=2.0.0",
   "pyarrow>=14.0.0",
+  "numpy>=1.26,<2.3",
+]
+
+[project.optional-dependencies]
+# 本机抓取 / 日更完整能力
+sync = [
+  "baostock>=0.8.8",
+  "akshare>=1.14.0",
   "PyYAML>=6.0",
   "click>=8.1.0",
   "tqdm>=4.66.0",
   "requests>=2.31.0",
+  "thsdk>=1.7.18",
 ]
+all = ["a-share-data[sync]"]
+
+[project.urls]
+Homepage = "https://github.com/dogcat142857-boop/a_share_data"
+Repository = "https://github.com/dogcat142857-boop/a_share_data"
 
 [project.scripts]
 a-share = "a_share.cli:main"

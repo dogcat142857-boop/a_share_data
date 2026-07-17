@@ -7,21 +7,44 @@ storage:
   raw_dir: raw              # 原始抓取备份（可选）
 
 fetch:
-  # 数据源：akshare（免费，无需 token）
-  source: akshare
+  # 日线数据源：baostock（前复权 adjustflag=2）
+  source: baostock
   # 日线起始日期（YYYYMMDD）；已有本地数据时会自动增量续写
   default_start: "20100101"
-  # 单次请求间隔（秒），降低被限流概率
-  request_pause: 0.35
+  # 并行进程数（baostock 对同时在线会话有限制，建议 6~10）
+  workers: 8
+  # 单进程模式下的请求间隔（秒）；多进程时可接近 0
+  request_pause: 0.0
   # 失败重试次数
   max_retries: 3
   retry_pause: 2.0
 
 universe:
-  # all = 全市场 A 股；也可改为 watchlist 文件路径（相对仓库根目录）
+  # all = 全市场沪深 A 股（不含北交所）；也可改为 watchlist
   mode: all
   watchlist: config/watchlist.txt
 
 update:
   # 更新日线时跳过已是最新交易日的股票
   skip_if_fresh: true
+
+# VOLAMOUNT（总笔数）—— thsdk.wencai_nlp 按日期区间批量拉取
+# 例：沪深A股,2024年1月2日至2024年1月31日总笔数
+wencai:
+  enabled: true
+  source: thsdk
+  universe: "沪深A股"
+  metric: "总笔数"
+  # 每段查询的日历跨度（天），约一个月一次请求覆盖全市场多日
+  chunk_days: 31
+  chunk_pause: 1.0
+  max_retries: 3
+  retry_pause: 2.0
+  merge_into_daily: true
+  # sync_all 日更时默认补最近 N 个交易日
+  daily_days: 5
+  backfill_start: "20100101"
+  # 可选：正式同花顺账号（也可用环境变量 THS_USERNAME / THS_PASSWORD / THS_MAC）
+  username: ""
+  password: ""
+  mac: ""
