@@ -10,7 +10,7 @@ fetch:
   # 日线数据源：baostock（前复权 adjustflag=2）
   source: baostock
   # 日线起始日期（YYYYMMDD）；已有本地数据时会自动增量续写
-  default_start: "20100101"
+  default_start: "19900101"
   # 并行进程数（baostock 对同时在线会话有限制，建议 6~10）
   workers: 8
   # 单进程模式下的请求间隔（秒）；多进程时可接近 0
