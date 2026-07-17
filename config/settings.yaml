@@ -1,0 +1,27 @@
+# A股个股数据维护配置
+
+storage:
+  root: data
+  daily_dir: daily          # 个股日线：data/daily/{code}.parquet
+  meta_dir: meta            # 股票列表、交易日历等
+  raw_dir: raw              # 原始抓取备份（可选）
+
+fetch:
+  # 数据源：akshare（免费，无需 token）
+  source: akshare
+  # 日线起始日期（YYYYMMDD）；已有本地数据时会自动增量续写
+  default_start: "20100101"
+  # 单次请求间隔（秒），降低被限流概率
+  request_pause: 0.35
+  # 失败重试次数
+  max_retries: 3
+  retry_pause: 2.0
+
+universe:
+  # all = 全市场 A 股；也可改为 watchlist 文件路径（相对仓库根目录）
+  mode: all
+  watchlist: config/watchlist.txt
+
+update:
+  # 更新日线时跳过已是最新交易日的股票
+  skip_if_fresh: true
