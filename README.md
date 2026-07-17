@@ -18,7 +18,7 @@ scripts/          # 一键脚本
 
 ```bash
 python -m venv .venv
-# Windows
+# Windows（务必用项目虚拟环境，避免与 Anaconda 全局包冲突）
 .venv\Scripts\activate
 pip install -r requirements.txt
 # 或可编辑安装（注册 a-share 命令）
