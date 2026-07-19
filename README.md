@@ -64,7 +64,27 @@ python scripts/pack_data_release.py --include-raw
 set A_SHARE_DATA_ROOT=D:\path\to\data
 ```
 
-### 3）本机抓取 / 日更
+### 3）Cursor Cloud Agent Environment（研究仓推荐）
+
+本仓是**数据采集/维护仓**，研究工作请单独建 Environment，挂你的**研究仓库**（不要用本仓当研究工作区）。
+
+1. 打开 [Cloud Agents → Environments](https://cursor.com/dashboard/cloud-agents#environments)
+2. **Create environment** → 连接 GitHub → 选择研究仓库
+3. 在 Setup 终端执行（首次约下 1.5GB，只慢这一次）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dogcat142857-boop/a_share_data/main/scripts/hydrate_from_release.sh | bash
+export A_SHARE_DATA_ROOT=$HOME/datasets/a_share
+echo "export A_SHARE_DATA_ROOT=$HOME/datasets/a_share" >> ~/.bashrc
+ls "$A_SHARE_DATA_ROOT/daily" | wc -l   # 应约 5200
+```
+
+4. Setup 完成后点 **Save snapshot**
+5. 以后新开研究 Agent → 选这个 Environment → 直接读 `$A_SHARE_DATA_ROOT`，不用再下包
+
+也可在已 clone 本仓的机器上本地执行：`bash scripts/hydrate_from_release.sh`。
+
+### 4）本机抓取 / 日更
 
 ```bash
 pip install -e ".[sync]"
