@@ -15,7 +15,7 @@ title="A股日线全量数据包 (baostock + volamount) ${stamp}"
 log() { echo "[$(date -Iseconds)] $*" | tee -a "$LOG"; }
 
 log "等待 backfill_volamount / update_daily / initial_build 结束 ..."
-while pgrep -f "scripts/(backfill_volamount|update_daily|initial_build)\.py" >/dev/null 2>&1; do
+while pgrep -f "scripts/(backfill_volamount|fast_merge_volamount|update_daily|initial_build)\.py" >/dev/null 2>&1; do
   n=$(find data/daily -name '*.parquet' 2>/dev/null | wc -l)
   log "仍有数据任务在跑 ... daily=$n"
   sleep 120
