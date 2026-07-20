@@ -27,13 +27,34 @@ def load_dotenv(path: Path | None = None) -> None:
             os.environ[key] = value
 
 
+def resolve_storage_root(
+    configured: str | Path | None = None,
+    *,
+    env: bool = True,
+) -> Path:
+    """
+    数据根目录解析顺序：
+    1. 环境变量 A_SHARE_DATA_ROOT（env=True 时）
+    2. 配置中的 storage.root（绝对路径原样使用，相对路径相对仓库根）
+    3. 仓库下 data/
+    """
+    if env:
+        env_root = os.environ.get("A_SHARE_DATA_ROOT", "").strip()
+        if env_root:
+            return Path(env_root).expanduser().resolve()
+    if configured is not None and str(configured).strip():
+        p = Path(str(configured).strip()).expanduser()
+        return p.resolve() if p.is_absolute() else (ROOT / p).resolve()
+    return (ROOT / "data").resolve()
+
+
 def load_settings(path: Path | None = None) -> dict[str, Any]:
     load_dotenv()
     settings_path = path or DEFAULT_SETTINGS
     with settings_path.open(encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     storage = data.setdefault("storage", {})
-    root = ROOT / storage.get("root", "data")
+    root = resolve_storage_root(storage.get("root", "data"))
     storage["root_path"] = root
     storage["daily_path"] = root / storage.get("daily_dir", "daily")
     storage["meta_path"] = root / storage.get("meta_dir", "meta")

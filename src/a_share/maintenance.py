@@ -5,12 +5,12 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from .config import ensure_dirs, load_settings
+from .config import ROOT, ensure_dirs, load_settings
 
 
 def clean_all_data(settings: dict | None = None, *, keep_logs: bool = False) -> dict[str, int]:
     """
-    清空本地 data 下所有行情与问财缓存（保留 .gitkeep）。
+    清空当前数据根目录下所有行情与问财缓存（保留 .gitkeep）。
     返回各目录删除的文件数。
     """
     settings = settings or load_settings()
@@ -39,7 +39,8 @@ def clean_all_data(settings: dict | None = None, *, keep_logs: bool = False) -> 
         stats[path.name] = n
 
     if not keep_logs:
-        log_root = root.parent / "logs"
+        # logs 始终在代码仓库下，不随外部数据根移动
+        log_root = ROOT / "logs"
         if log_root.exists():
             n = 0
             for f in log_root.glob("*"):

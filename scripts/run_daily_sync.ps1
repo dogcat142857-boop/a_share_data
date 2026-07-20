@@ -23,6 +23,11 @@ if (Test-Path $envFile) {
     }
 }
 
+# 若未在 .env 指定，则与 config/settings.yaml 默认数据根保持一致
+if (-not $env:A_SHARE_DATA_ROOT) {
+    $env:A_SHARE_DATA_ROOT = "E:\FangcloudV2\独角汇\二级市场相关\数据\A股数据"
+}
+
 $logDir = Join-Path $Root "logs"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pandas as pd
 
+from .config import load_settings
 from .storage import DAILY_COLUMNS, normalize_code, read_daily
 
 ENV_DATA_ROOT = "A_SHARE_DATA_ROOT"
@@ -17,14 +17,13 @@ def resolve_data_root(root: str | Path | None = None) -> Path:
     数据根目录解析顺序：
     1. 显式传入 root
     2. 环境变量 A_SHARE_DATA_ROOT
-    3. 本仓库下的 data/
+    3. config/settings.yaml 的 storage.root
+    4. 仓库下 data/
     """
     if root is not None:
         return Path(root).expanduser().resolve()
-    env = os.environ.get(ENV_DATA_ROOT, "").strip()
-    if env:
-        return Path(env).expanduser().resolve()
-    return Path(__file__).resolve().parents[2] / "data"
+    settings = load_settings()
+    return Path(settings["storage"]["root_path"])
 
 
 def daily_dir(root: str | Path | None = None) -> Path:

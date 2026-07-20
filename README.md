@@ -11,10 +11,14 @@ A 股个股数据日常维护仓库：
 
 ## 数据目录
 
-默认都在仓库下的 `data/`（**不进 Git**，体积大，本地/网盘维护）：
+数据**不进 Git**（体积大）。本机默认根目录见 `config/settings.yaml` 的 `storage.root`：
+
+`E:/FangcloudV2/独角汇/二级市场相关/数据/A股数据`
+
+也可被环境变量 `A_SHARE_DATA_ROOT` 覆盖。仅使用该目录，不要写入方寸云其它文件夹。
 
 ```
-data/
+{root}/
   meta/
     stock_list.parquet      # 股票列表（沪深 A，不含北交所）
     trade_calendar.parquet  # 交易日历
@@ -37,7 +41,7 @@ pip install "a-share-data @ git+https://github.com/dogcat142857-boop/a_share_dat
 import os
 from a_share import load_daily, list_codes, load_volamount_snapshot
 
-os.environ["A_SHARE_DATA_ROOT"] = r"C:\Users\UnicornSelected-06\a_share_data\data"
+os.environ["A_SHARE_DATA_ROOT"] = r"E:\FangcloudV2\独角汇\二级市场相关\数据\A股数据"
 
 df = load_daily("000001", start="2024-01-01")
 codes = list_codes()
@@ -48,7 +52,7 @@ snap = load_volamount_snapshot("2024-07-16")
 
 ```python
 from a_share import load_daily
-df = load_daily("600519", root=r"D:\datasets\a_share_data\data")
+df = load_daily("600519", root=r"E:\FangcloudV2\独角汇\二级市场相关\数据\A股数据")
 ```
 
 ### 2）把数据包走（给另一台机器）
@@ -75,10 +79,10 @@ pip install -r requirements.txt
 ## 结构
 
 ```
-config/           # 配置与自选股
-data/             # 本地数据（见上）
+config/           # 配置与自选股（含 storage.root）
 src/a_share/      # 可读 API + 抓取管道
 scripts/          # 一键脚本 / 计划任务
+# 数据目录见 storage.root / A_SHARE_DATA_ROOT（默认在方寸云 A股数据）
 ```
 
 ## 快速开始（维护端）

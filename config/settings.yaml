@@ -1,8 +1,10 @@
 # A股个股数据维护配置
 
 storage:
-  root: data
-  daily_dir: daily          # 个股日线：data/daily/{code}.parquet
+  # 数据根目录（绝对路径；也可被环境变量 A_SHARE_DATA_ROOT 覆盖）
+  # 仅使用此目录，勿写入方寸云其它文件夹
+  root: "E:/FangcloudV2/独角汇/二级市场相关/数据/A股数据"
+  daily_dir: daily          # 个股日线：{root}/daily/{code}.parquet
   meta_dir: meta            # 股票列表、交易日历等
   raw_dir: raw              # 原始抓取备份（可选）
 
