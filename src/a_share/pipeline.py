@@ -11,6 +11,7 @@ from . import fetchers
 from . import wencai as wencai_api
 from .config import ROOT, ensure_dirs, load_settings
 from .storage import (
+    apply_ohlcv_frames,
     apply_volamount_frames,
     merge_daily,
     normalize_code,
@@ -177,6 +178,25 @@ def update_daily(
 
     ok = fail = 0
     errors: list[str] = []
+    baostock_ok = True
+
+    # 先探测 baostock；不可用则跳过逐只重试，交给问财兜底
+    if jobs:
+        try:
+            import baostock as bs
+
+            lg = bs.login()
+            if lg.error_code != "0":
+                baostock_ok = False
+                errors.append(f"baostock login: {lg.error_msg}")
+            else:
+                try:
+                    bs.logout()
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as exc:  # noqa: BLE001
+            baostock_ok = False
+            errors.append(f"baostock probe: {exc}")
 
     def _commit(code: str, new: pd.DataFrame) -> None:
         if not _valid_daily(new):
@@ -185,7 +205,12 @@ def update_daily(
         merged = merge_daily(existing, new)
         write_daily(daily_dir, code, merged)
 
-    if n_workers <= 1 or len(jobs) <= 1:
+    if not jobs:
+        pass
+    elif not baostock_ok:
+        fail = len(jobs)
+        print(f"[daily] baostock 不可用，跳过 {fail} 只，改走问财兜底")
+    elif n_workers <= 1 or len(jobs) <= 1:
         for code, pull_start, pull_end, *_ in tqdm(jobs, desc="更新日线(baostock)", unit="只"):
             try:
                 new = fetchers.fetch_daily_hist(
@@ -266,7 +291,132 @@ def update_daily(
             "\n".join(errors), encoding="utf-8"
         )
 
-    return {"ok": ok, "skip": skip, "fail": fail, "total": len(codes)}
+    stats = {"ok": ok, "skip": skip, "fail": fail, "total": len(codes)}
+
+    # baostock 有失败时，用问财按日截面兜底最近 N 个交易日
+    wencai_cfg = settings.get("wencai", {}) or {}
+    fallback_on = bool(wencai_cfg.get("ohlcv_fallback", True)) and bool(
+        wencai_cfg.get("enabled", True)
+    )
+    if fallback_on and fail > 0:
+        days = int(wencai_cfg.get("ohlcv_days", wencai_cfg.get("daily_days", 5)))
+        try:
+            fb = update_daily_wencai_fallback(
+                settings=settings,
+                days=days,
+                end=end,
+            )
+            stats["wencai_fallback"] = fb
+            print(
+                f"[daily] 问财兜底: 日={fb.get('days', 0)} "
+                f"ok={fb.get('ok', 0)} fail={fb.get('fail', 0)} "
+                f"rows={fb.get('rows', 0)} updated={fb.get('updated', 0)}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            stats["wencai_fallback_error"] = str(exc)
+            print(f"[daily] 问财兜底失败: {exc}")
+
+    return stats
+
+
+def update_daily_wencai_fallback(
+    *,
+    settings: dict | None = None,
+    days: int = 5,
+    start: str | None = None,
+    end: str | None = None,
+    force: bool = False,
+) -> dict[str, int]:
+    """
+    用问财按交易日拉取全市场前复权 OHLCV，合并进 daily。
+    适合 baostock 不可用时的增量兜底（逐日截面，不做超长历史回填）。
+    """
+    settings = settings or load_settings()
+    ensure_dirs(settings)
+    wencai_cfg = settings.get("wencai", {}) or {}
+    if not wencai_cfg.get("enabled", True):
+        return {"ok": 0, "skip": 0, "fail": 0, "days": 0, "rows": 0, "updated": 0}
+
+    daily_dir = Path(settings["storage"]["daily_path"])
+    universe = str(wencai_cfg.get("universe", "沪深A股"))
+    chunk_pause = float(wencai_cfg.get("chunk_pause", 1.0))
+    max_retries = int(wencai_cfg.get("max_retries", 3))
+    retry_pause = float(wencai_cfg.get("retry_pause", 2.0))
+
+    if start is not None or end is not None:
+        date_list = _trade_dates_between(settings, start, end)
+    else:
+        latest = _latest_calendar_date(settings)
+        if latest is None:
+            raise RuntimeError("无交易日历，请先运行 update-meta")
+        cal_path = Path(settings["storage"]["meta_path"]) / "trade_calendar.parquet"
+        cal = pd.read_parquet(cal_path)
+        cal_dates = pd.to_datetime(cal["date"]).sort_values()
+        past = cal_dates[cal_dates <= latest]
+        date_list = [
+            pd.Timestamp(d).normalize()
+            for d in past.tail(max(int(days), 1)).tolist()
+        ]
+
+    if not date_list:
+        return {"ok": 0, "skip": 0, "fail": 0, "days": 0, "rows": 0, "updated": 0}
+
+    ok = skip = fail = rows = updated = 0
+    errors: list[str] = []
+    frames: list[pd.DataFrame] = []
+    raw_dir = Path(settings["storage"]["raw_path"]) / "wencai" / "ohlcv"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    for day in tqdm(date_list, desc="问财OHLCV兜底", unit="日"):
+        label = day.strftime("%Y%m%d")
+        cache_path = raw_dir / f"{label}.parquet"
+        try:
+            if not force and cache_path.exists():
+                long_df = pd.read_parquet(cache_path)
+                skip += 1
+            else:
+                long_df = wencai_api.fetch_ohlcv_day(
+                    day,
+                    settings=settings,
+                    universe=universe,
+                    max_retries=max_retries,
+                    retry_pause=retry_pause,
+                )
+                if long_df.empty or not long_df["close"].notna().any():
+                    raise ValueError("问财 OHLCV 返回空表")
+                long_df.to_parquet(cache_path, index=False)
+                ok += 1
+                time.sleep(chunk_pause)
+
+            rows += len(long_df)
+            frames.append(long_df)
+        except Exception as exc:  # noqa: BLE001
+            fail += 1
+            errors.append(f"{label}: {exc}")
+            time.sleep(chunk_pause)
+
+    if frames:
+        big = pd.concat(frames, ignore_index=True)
+        mstats = apply_ohlcv_frames(daily_dir, big)
+        updated = int(mstats.get("updated", 0)) + int(mstats.get("created", 0))
+
+
+    if errors:
+        log_dir = ROOT / "logs"
+        log_dir.mkdir(exist_ok=True)
+        stamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        (log_dir / f"ohlcv_wencai_errors_{stamp}.log").write_text(
+            "\n".join(errors), encoding="utf-8"
+        )
+
+    return {
+        "ok": ok,
+        "skip": skip,
+        "fail": fail,
+        "days": len(date_list),
+        "rows": rows,
+        "updated": updated,
+    }
 
 
 def _trade_dates_between(

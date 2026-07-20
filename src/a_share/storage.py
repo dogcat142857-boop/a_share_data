@@ -167,3 +167,94 @@ def apply_volamount_frames(daily_dir: Path, frames: pd.DataFrame) -> dict[str, i
             created += 1
 
     return {"updated": updated, "created": created}
+
+
+def apply_ohlcv_frames(daily_dir: Path, frames: pd.DataFrame) -> dict[str, int]:
+    """
+    批量把问财 OHLCV 长表合并进个股日线。
+    仅写入有有效 close 的行，避免造出“只有指标、无行情”的脏日期。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if frames is None or frames.empty:
+        return {"updated": 0, "created": 0, "rows": 0}
+
+    data = frames.copy()
+    data["code"] = data["code"].map(normalize_code)
+    data["date"] = pd.to_datetime(data["date"]).dt.normalize()
+    if "close" not in data.columns:
+        return {"updated": 0, "created": 0, "rows": 0}
+    data["close"] = pd.to_numeric(data["close"], errors="coerce")
+    data = data.dropna(subset=["code", "date", "close"])
+    if data.empty:
+        return {"updated": 0, "created": 0, "rows": 0}
+
+    for col in ("open", "high", "low", "volume", "amount", "turnover", "pct_chg"):
+        if col in data.columns:
+            data[col] = pd.to_numeric(data[col], errors="coerce")
+
+    data = data.drop_duplicates(subset=["code", "date"], keep="last").sort_values(
+        ["code", "date"]
+    )
+
+    daily_dir.mkdir(parents=True, exist_ok=True)
+    keep_cols = [
+        c
+        for c in (
+            "date",
+            "code",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "amount",
+            "turnover",
+            "pct_chg",
+        )
+        if c in data.columns
+    ]
+
+    groups = [
+        (str(code), grp[keep_cols].copy()) for code, grp in data.groupby("code", sort=False)
+    ]
+
+    def _one(item: tuple[str, pd.DataFrame]) -> str:
+        code, patch = item
+        path = daily_path(daily_dir, code)
+        patch = _ensure_columns(patch)
+        patch["code"] = code
+        patch["date"] = pd.to_datetime(patch["date"]).dt.normalize()
+        patch = (
+            patch[DAILY_COLUMNS]
+            .drop_duplicates(subset=["date"], keep="last")
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+        if not path.exists():
+            write_daily(daily_dir, code, patch)
+            return "created"
+
+        # 轻量合并：去掉同日旧行后 concat，避免全表 groupby
+        existing = pd.read_parquet(path)
+        existing = _ensure_columns(existing)
+        existing["date"] = pd.to_datetime(existing["date"]).dt.normalize()
+        patch_dates = set(patch["date"].tolist())
+        kept = existing[~existing["date"].isin(patch_dates)]
+        out = pd.concat([kept, patch], ignore_index=True)
+        out["code"] = code
+        write_daily(daily_dir, code, out)
+        return "updated"
+
+    updated = created = 0
+    workers = min(12, max(4, (len(groups) // 300) or 4))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_one, g) for g in groups]
+        for fut in as_completed(futs):
+            if fut.result() == "updated":
+                updated += 1
+            else:
+                created += 1
+
+    return {"updated": updated, "created": created, "rows": int(len(data))}
+

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""日常一键同步：元数据 → baostock 日线 → 问财 VOLAMOUNT。"""
+"""日常一键同步：元数据 → baostock 日线（失败则问财 OHLCV 兜底）→ 问财 VOLAMOUNT。"""
 from __future__ import annotations
 
 import argparse
@@ -17,7 +17,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="一键同步 meta + 日线 + volamount")
     parser.add_argument("--force-daily", action="store_true", help="强制重拉日线")
     parser.add_argument("--workers", type=int, default=None, help="日线并行进程数")
-    parser.add_argument("--skip-volamount", action="store_true", help="跳过问财")
+    parser.add_argument("--skip-volamount", action="store_true", help="跳过问财 volamount")
     args = parser.parse_args()
 
     settings = load_settings()
@@ -33,6 +33,12 @@ def main() -> None:
         f"[daily] 更新 {stats['ok']}，跳过 {stats['skip']}，"
         f"失败 {stats['fail']}，合计 {stats['total']}"
     )
+    fb = stats.get("wencai_fallback")
+    if fb:
+        print(
+            f"[daily] 问财OHLCV兜底 rows={fb.get('rows', 0)} "
+            f"updated={fb.get('updated', 0)} fail={fb.get('fail', 0)}"
+        )
 
     wencai_cfg = settings.get("wencai", {})
     if args.skip_volamount or not wencai_cfg.get("enabled", True):

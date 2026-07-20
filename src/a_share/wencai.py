@@ -1,4 +1,4 @@
-"""问财 VOLAMOUNT（总笔数）——优先用 thsdk.wencai_nlp 按日期区间批量拉取。"""
+"""问财 thsdk.wencai_nlp：VOLAMOUNT（总笔数）+ 日线 OHLCV 兜底。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,29 @@ from .storage import normalize_code
 VOL_COL_RE = re.compile(
     r"^(?:总笔数|成交笔数|成交次数|VOLAMOUNT)\[(\d{8})\]$",
     re.IGNORECASE,
+)
+
+# 例：开盘价:前复权[20260720] / 成交量[20260720] / 涨跌幅:前复权[20260720]
+OHLCV_FIELD_RE = re.compile(
+    r"^(开盘价|最高价|最低价|收盘价|成交量|成交额|换手率|涨跌幅)"
+    r"(?::(?:前复权|不复权|后复权))?"
+    r"\[(\d{8})\]$"
+)
+
+OHLCV_FIELD_MAP = {
+    "开盘价": "open",
+    "最高价": "high",
+    "最低价": "low",
+    "收盘价": "close",
+    "成交量": "volume",
+    "成交额": "amount",
+    "换手率": "turnover",
+    "涨跌幅": "pct_chg",
+}
+
+OHLCV_METRICS = (
+    "前复权开盘价,前复权最高价,前复权最低价,前复权收盘价,"
+    "成交量,成交额,换手率,涨跌幅"
 )
 
 
@@ -191,3 +214,125 @@ def resolve_wencai_cookie(settings: dict | None = None) -> str:
     wencai = settings.get("wencai", {})
     env_name = wencai.get("cookie_env", "WENCAI_COOKIE")
     return os.environ.get(env_name, "").strip() or str(wencai.get("cookie") or "").strip()
+
+
+def build_ohlcv_day_query(
+    trade_date: str | pd.Timestamp,
+    *,
+    universe: str = "沪深A股",
+    metrics: str = OHLCV_METRICS,
+) -> str:
+    """例：沪深A股,2026年7月20日前复权开盘价,前复权最高价,..."""
+    day = _format_cn_date(trade_date)
+    return f"{universe},{day}{metrics}"
+
+
+def wide_ohlcv_to_long(raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    问财单日宽表 -> 长表 date/code/open/high/low/close/volume/amount/turnover/pct_chg。
+    换手率按百分数转成比例（与本地 baostock 字段一致）。
+    """
+    if raw is None or raw.empty:
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "code",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "amount",
+                "turnover",
+                "pct_chg",
+            ]
+        )
+
+    cols = [str(c) for c in raw.columns]
+    code_col = _pick_code_column(cols)
+
+    # field -> (original_col, date)
+    picked: dict[str, tuple[str, pd.Timestamp]] = {}
+    for col in cols:
+        m = OHLCV_FIELD_RE.match(str(col).strip())
+        if not m:
+            continue
+        cn_name, ymd = m.group(1), m.group(2)
+        field = OHLCV_FIELD_MAP.get(cn_name)
+        if not field:
+            continue
+        # 同字段多列时优先保留先匹配到的（查询已指定前复权）
+        picked.setdefault(field, (col, pd.Timestamp(ymd).normalize()))
+
+    need = ("open", "high", "low", "close")
+    if not all(k in picked for k in need):
+        raise ValueError(
+            "未找到完整 OHLCV 列（开高低收），"
+            f"实际列: {cols[:20]}{'...' if len(cols) > 20 else ''}"
+        )
+
+    dates = {d for _, d in picked.values()}
+    if len(dates) != 1:
+        raise ValueError(f"OHLCV 列日期不一致: {sorted(str(d.date()) for d in dates)}")
+    trade_date = next(iter(dates))
+
+    out = pd.DataFrame(
+        {
+            "code": raw[code_col].map(normalize_code),
+            "date": trade_date,
+        }
+    )
+    for field, (col, _) in picked.items():
+        out[field] = pd.to_numeric(raw[col], errors="coerce")
+
+    # 问财换手率一般为百分数
+    if "turnover" in out.columns:
+        out["turnover"] = out["turnover"] / 100.0
+
+    out = out.dropna(subset=["code", "close"])
+    out = out.drop_duplicates(subset=["code", "date"], keep="last")
+    cols_out = [
+        "date",
+        "code",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "turnover",
+        "pct_chg",
+    ]
+    for c in cols_out:
+        if c not in out.columns:
+            out[c] = pd.NA
+    return out[cols_out].reset_index(drop=True)
+
+
+def fetch_ohlcv_day(
+    trade_date: str | pd.Timestamp,
+    *,
+    settings: dict | None = None,
+    universe: str = "沪深A股",
+    metrics: str = OHLCV_METRICS,
+    max_retries: int = 3,
+    retry_pause: float = 2.0,
+) -> pd.DataFrame:
+    """拉取单日全市场前复权 OHLCV 截面。"""
+    ts = pd.Timestamp(trade_date).normalize()
+    query = build_ohlcv_day_query(ts, universe=universe, metrics=metrics)
+    last_err: Exception | None = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            with _ths_client(settings) as ths:
+                resp = ths.wencai_nlp(query)
+            wide = _response_to_frame(resp)
+            return wide_ohlcv_to_long(wide)
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            if attempt < max_retries:
+                time.sleep(retry_pause * attempt)
+
+    assert last_err is not None
+    raise last_err

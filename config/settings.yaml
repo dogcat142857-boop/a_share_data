@@ -44,6 +44,9 @@ wencai:
   # sync_all 日更时默认补最近 N 个交易日
   daily_days: 5
   backfill_start: "20100101"
+  # baostock 失败时，用问财按日补前复权 OHLCV（逐日截面）
+  ohlcv_fallback: true
+  ohlcv_days: 5
   # 可选：正式同花顺账号（也可用环境变量 THS_USERNAME / THS_PASSWORD / THS_MAC）
   username: ""
   password: ""

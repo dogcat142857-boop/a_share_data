@@ -47,3 +47,4 @@ def ensure_dirs(settings: dict[str, Any]) -> None:
     raw = Path(settings["storage"]["raw_path"])
     (raw / "wencai" / "volamount").mkdir(parents=True, exist_ok=True)
     (raw / "wencai" / "volamount_chunks").mkdir(parents=True, exist_ok=True)
+    (raw / "wencai" / "ohlcv").mkdir(parents=True, exist_ok=True)

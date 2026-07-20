@@ -116,6 +116,7 @@ python scripts/sync_all.py
 
 - 更新 meta（股票列表 / 交易日历）
 - baostock 增量补日线（跳过已是最新交易日的股票）
+- **baostock 失败时**：问财按日补最近 N 个交易日前复权 OHLCV（`wencai.ohlcv_fallback`）
 - 问财补最近 5 个交易日 volamount 并合并
 
 ### 自动日更
@@ -144,5 +145,5 @@ python scripts/backfill_volamount.py --start 20100101
 ## 数据源
 
 - [baostock](http://baostock.com/)：沪深 A 股前复权日线、估值/状态字段、股票列表、交易日历  
-- [thsdk](https://pypi.org/project/thsdk/)：`wencai_nlp` 全市场区间总笔数（VOLAMOUNT）  
+- [thsdk](https://pypi.org/project/thsdk/)：`wencai_nlp` 全市场区间总笔数（VOLAMOUNT）；日线 OHLCV 兜底  
 - [AKShare](https://github.com/akfamily/akshare)：列表/日历的备用回退

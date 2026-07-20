@@ -1,7 +1,8 @@
 # 每日收盘后自动同步 A 股数据（元数据 + 日线 + VOLAMOUNT）
 # 由 Windows 计划任务调用；工作目录为仓库根目录
 
-$ErrorActionPreference = "Stop"
+# Continue：baostock 等会往 stderr 打 "login failed!"，Stop 会导致计划任务误失败
+$ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
@@ -27,5 +28,9 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $logFile = Join-Path $logDir "daily_sync_$stamp.log"
 
-& $Python (Join-Path $Root "scripts\sync_all.py") *>&1 | Tee-Object -FilePath $logFile
-exit $LASTEXITCODE
+$syncScript = Join-Path $Root "scripts\sync_all.py"
+# 用 cmd 重定向，避免 PowerShell 把 native stderr 当成终止错误
+cmd /c "`"$Python`" `"$syncScript`" > `"$logFile`" 2>&1"
+$exitCode = $LASTEXITCODE
+Get-Content $logFile -ErrorAction SilentlyContinue | Select-Object -Last 30
+exit $exitCode
