@@ -40,6 +40,34 @@ def _valid_daily(df: pd.DataFrame) -> bool:
     )
 
 
+def _is_baostock_systemic_error(msg: str | None) -> bool:
+    """
+    判断是否为 baostock 全局不可用（登录上限、会话失效、网络中断等）。
+    这类错误不应再对剩余股票做逐只重试，应尽快交给问财兜底。
+    """
+    if not msg:
+        return False
+    text = str(msg).lower()
+    needles = (
+        "login failed",
+        "user login",
+        "10001011",  # baostock 用户数限制
+        "10001001",
+        "worker login failed",
+        "winerror 10057",
+        "winerror 10054",
+        "connection aborted",
+        "connection reset",
+        "remotelyclosed",
+        "远程主机关闭",
+        "没有连接",
+        "未连接",
+        "用户数量",
+        "超过最大",
+    )
+    return any(n in text for n in needles)
+
+
 def _read_watchlist(path: Path) -> list[str]:
     codes: list[str] = []
     if not path.exists():
@@ -205,6 +233,12 @@ def update_daily(
         merged = merge_daily(existing, new)
         write_daily(daily_dir, code, merged)
 
+    # 连续/累计出现全局错误时，提前放弃 baostock，改走问财
+    systemic_abort_after = int(fetch_cfg.get("baostock_systemic_abort_after", 8))
+    retry_max = int(fetch_cfg.get("baostock_retry_max", 30))
+    systemic_hits = 0
+    aborted_systemic = False
+
     if not jobs:
         pass
     elif not baostock_ok:
@@ -222,13 +256,31 @@ def update_daily(
                 )
                 _commit(code, new)
                 ok += 1
+                systemic_hits = 0
                 if pause > 0:
                     time.sleep(pause)
             except Exception as exc:  # noqa: BLE001
                 fail += 1
-                errors.append(f"{code}: {exc}")
+                err_s = str(exc)
+                errors.append(f"{code}: {err_s}")
+                if _is_baostock_systemic_error(err_s):
+                    systemic_hits += 1
+                    if systemic_hits >= systemic_abort_after:
+                        aborted_systemic = True
+                        remain = len(jobs) - ok - fail
+                        if remain > 0:
+                            fail += remain
+                        print(
+                            f"[daily] baostock 连续全局失败 {systemic_hits} 次，"
+                            f"跳过剩余 {max(remain, 0)} 只，改走问财兜底"
+                        )
+                        break
+                else:
+                    systemic_hits = 0
     else:
         failed_jobs: list[tuple[str, str, str, int, float]] = []
+        retry_candidates: list[tuple[str, str, str, int, float]] = []
+        processed: set = set()
         with ProcessPoolExecutor(
             max_workers=max(1, n_workers),
             initializer=fetchers._worker_login,
@@ -242,33 +294,81 @@ def update_daily(
                 desc=f"更新日线(baostock×{n_workers})",
                 unit="只",
             ):
+                processed.add(fut)
                 job = futs[fut]
                 code = job[0]
                 try:
                     code, new, err = fut.result()
                     if err or new is None:
                         fail += 1
+                        err_s = str(err or "empty")
                         failed_jobs.append(job)
-                        errors.append(f"{code}: {err or 'empty'}")
-                        continue
-                    _commit(code, new)
-                    ok += 1
+                        errors.append(f"{code}: {err_s}")
+                        if _is_baostock_systemic_error(err_s):
+                            systemic_hits += 1
+                            if systemic_hits >= systemic_abort_after:
+                                aborted_systemic = True
+                                print(
+                                    f"[daily] baostock 连续全局失败 {systemic_hits} 次，"
+                                    f"中止并行拉取，改走问财兜底"
+                                )
+                        else:
+                            systemic_hits = 0
+                            retry_candidates.append(job)
+                    else:
+                        _commit(code, new)
+                        ok += 1
+                        systemic_hits = 0
                 except Exception as exc:  # noqa: BLE001
                     fail += 1
+                    err_s = str(exc)
                     failed_jobs.append(job)
-                    errors.append(f"{code}: {exc}")
+                    errors.append(f"{code}: {err_s}")
+                    if _is_baostock_systemic_error(err_s):
+                        systemic_hits += 1
+                        if systemic_hits >= systemic_abort_after:
+                            aborted_systemic = True
+                            print(
+                                f"[daily] baostock 连续全局失败 {systemic_hits} 次，"
+                                f"中止并行拉取，改走问财兜底"
+                            )
+                    else:
+                        systemic_hits = 0
+                        retry_candidates.append(job)
 
-        # 并行失败的股票，降为单进程逐只重试（避免 baostock 并发登录超限）
-        if failed_jobs:
+                if aborted_systemic:
+                    for pending, pjob in futs.items():
+                        if pending in processed:
+                            continue
+                        pending.cancel()
+                        fail += 1
+                        failed_jobs.append(pjob)
+                        errors.append(f"{pjob[0]}: aborted (baostock systemic)")
+                    break
+
+        # 仅对「非全局」失败做有限单进程重试；登录上限类错误直接交给问财
+        if aborted_systemic:
+            print(
+                f"[daily] 跳过 baostock 逐只重试"
+                f"（失败 {fail}，成功 {ok}），优先问财兜底"
+            )
+        elif retry_candidates:
+            to_retry = retry_candidates[: max(0, retry_max)]
+            if len(retry_candidates) > len(to_retry):
+                print(
+                    f"[daily] 非全局失败 {len(retry_candidates)} 只，"
+                    f"仅重试前 {len(to_retry)} 只"
+                )
             retry_ok = 0
-            for job in tqdm(failed_jobs, desc="重试失败股票", unit="只"):
+            retry_systemic = 0
+            for job in tqdm(to_retry, desc="重试失败股票", unit="只"):
                 code, pull_start, pull_end, *_ = job
                 try:
                     new = fetchers.fetch_daily_hist(
                         code,
                         pull_start,
                         pull_end,
-                        max_retries=max_retries,
+                        max_retries=min(max_retries, 2),
                         retry_pause=retry_pause,
                     )
                     _commit(code, new)
@@ -276,10 +376,22 @@ def update_daily(
                     retry_ok += 1
                     fail -= 1
                     errors = [e for e in errors if not e.startswith(f"{code}:")]
+                    retry_systemic = 0
                     if pause > 0:
                         time.sleep(pause)
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{code}: retry {exc}")
+                    err_s = str(exc)
+                    errors.append(f"{code}: retry {err_s}")
+                    if _is_baostock_systemic_error(err_s):
+                        retry_systemic += 1
+                        if retry_systemic >= 3:
+                            print(
+                                "[daily] 重试阶段再次遇到 baostock 全局失败，"
+                                "停止重试，改走问财兜底"
+                            )
+                            break
+                    else:
+                        retry_systemic = 0
             if retry_ok:
                 print(f"[daily] 单进程重试成功 {retry_ok} 只")
 

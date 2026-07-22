@@ -15,6 +15,10 @@ fetch:
   default_start: "19900101"
   # 并行进程数（baostock 对同时在线会话有限制，建议 6~10）
   workers: 8
+  # 连续出现多少次登录/网络类全局错误后，中止 baostock 改走问财
+  baostock_systemic_abort_after: 8
+  # 非全局失败最多单进程重试多少只（避免对数千只空转）
+  baostock_retry_max: 30
   # 单进程模式下的请求间隔（秒）；多进程时可接近 0
   request_pause: 0.0
   # 失败重试次数
